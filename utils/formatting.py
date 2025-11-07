@@ -1,0 +1,278 @@
+"""Message formatting utilities."""
+import logging
+from typing import List
+from datetime import datetime
+
+from models.package import PackageInfo, PackageStats
+
+logger = logging.getLogger(__name__)
+
+
+def format_package_list(
+    packages: List[PackageInfo],
+    email: str,
+    page: int = 0,
+    per_page: int = 20,
+    show_all_statuses: bool = False
+) -> tuple[str, int]:
+    """
+    Format package list for a single page with pagination.
+
+    Args:
+        packages: List of packages
+        email: Maintainer email
+        page: Current page (0-indexed)
+        per_page: Packages per page
+        show_all_statuses: Show all statuses or only outdated
+
+    Returns:
+        Tuple of (formatted message, total pages)
+    """
+    if not packages:
+        return (
+            f"✨ <b>Пакеты для {email}</b>\n\n"
+            f"Пакетов не найдено",
+            1
+        )
+
+    # Filter packages if needed
+    if not show_all_statuses:
+        packages = [pkg for pkg in packages if pkg.is_outdated]
+
+    if not packages and not show_all_statuses:
+        return (
+            f"✅ <b>Все пакеты актуальны!</b>\n\n"
+            f"<code>{email}</code>\n\n"
+            f"Нет outdated пакетов",
+            1
+        )
+
+    # Count by status
+    total_packages = len(packages)
+    outdated_count = sum(1 for pkg in packages if pkg.status == 'outdated')
+    newest_count = sum(1 for pkg in packages if pkg.status == 'newest')
+    other_count = total_packages - outdated_count - newest_count
+
+    # Calculate pagination
+    total_pages = (total_packages + per_page - 1) // per_page
+    page = max(0, min(page, total_pages - 1))  # Clamp page
+
+    start_idx = page * per_page
+    end_idx = min(start_idx + per_page, total_packages)
+    page_packages = packages[start_idx:end_idx]
+
+    lines = []
+
+    # Header
+    if show_all_statuses:
+        lines.append(f"📦 <b>Пакеты для {email}</b>\n")
+    else:
+        lines.append(f"⚠️ <b>Outdated пакеты</b>\n")
+        lines.append(f"<code>{email}</code>\n")
+
+    # Show packages with global numbering
+    for i, pkg in enumerate(page_packages, start_idx + 1):
+        status_emoji = _get_status_emoji(pkg.status)
+
+        if pkg.is_outdated:
+            newest = pkg.best_newest_version
+            source = "🔴 RDB" if pkg.has_rdb_data else "🟣 Repology"
+
+            if newest:
+                # Build package info lines
+                pkg_lines = [
+                    f"<b>{i}.</b> <b>{pkg.name}</b> {status_emoji} {source}\n"
+                ]
+
+                # Show RDB package name if different from repology name
+                if pkg.rdb_pkg_name and pkg.rdb_pkg_name != pkg.name:
+                    pkg_lines.append(f"   ALT: <code>{pkg.rdb_pkg_name}</code>\n")
+
+                pkg_lines.append(f"   <i>{pkg.repo}</i>\n")
+                pkg_lines.append(f"   <code>{pkg.version}</code> ▸ <b>{newest}</b>\n")
+
+                # Add appropriate link
+                if pkg.has_rdb_data and pkg.rdb_pkg_name:
+                    # Link to packages.altlinux.org
+                    alt_url = f"https://packages.altlinux.org/ru/sisyphus/srpms/{pkg.rdb_pkg_name}/"
+                    pkg_lines.append(f"   <a href='{alt_url}'>🔗 Пакет в ALT</a>")
+                    if pkg.rdb_date:
+                        pkg_lines.append(f" • <i>{pkg.rdb_date[:10]}</i>")
+                    pkg_lines.append("\n")
+                elif pkg.rdb_pkg_name:
+                    # Has RDB data but prefer Repology - show both links
+                    alt_url = f"https://packages.altlinux.org/ru/sisyphus/srpms/{pkg.rdb_pkg_name}/"
+                    pkg_lines.append(f"   <a href='{pkg.repology_url}'>🔗 Repology</a> • <a href='{alt_url}'>ALT</a>\n")
+                else:
+                    pkg_lines.append(f"   <a href='{pkg.repology_url}'>🔗 Подробнее</a>\n")
+
+                lines.append("".join(pkg_lines))
+            else:
+                lines.append(
+                    f"<b>{i}.</b> <b>{pkg.name}</b> {status_emoji} {source}\n"
+                    f"   <i>{pkg.repo}</i>\n"
+                    f"   <code>{pkg.version}</code> (новая версия неизвестна)\n"
+                    f"   <a href='{pkg.repology_url}'>🔗 Подробнее</a>\n"
+                )
+        else:
+            lines.append(
+                f"{i}. {pkg.name} {status_emoji} · <code>{pkg.version}</code> · <i>{pkg.repo}</i>\n"
+            )
+
+    # Footer with stats
+    lines.append("\n" + "━" * 28)
+    if show_all_statuses:
+        lines.append(
+            f"\n📊 <b>Итого:</b> {total_packages} {_plural_packages(total_packages)}\n"
+            f"⚠️ Outdated: <b>{outdated_count}</b> · "
+            f"✅ Newest: <b>{newest_count}</b>"
+            + (f" · ℹ️ Другие: {other_count}" if other_count > 0 else "")
+        )
+    else:
+        if outdated_count > 0:
+            lines.append(f"\n⚠️ <b>{outdated_count}</b> {_plural_packages(outdated_count)} требуют обновления")
+        else:
+            lines.append(f"\n✅ Все пакеты актуальны!")
+
+    # Page indicator if multiple pages
+    if total_pages > 1:
+        lines.append(f"\n📄 Страница {page + 1} из {total_pages}")
+
+    return ("\n".join(lines), total_pages)
+
+
+def format_package_stats(stats: PackageStats) -> str:
+    """
+    Format package statistics.
+
+    Args:
+        stats: PackageStats object
+
+    Returns:
+        Formatted message
+    """
+    # Create progress bar for outdated percentage
+    bar_length = 10
+    filled = int(bar_length * stats.outdated_percentage / 100)
+    bar = "█" * filled + "░" * (bar_length - filled)
+
+    lines = [
+        f"📊 <b>Статистика</b>\n",
+        f"<code>{stats.email}</code>\n",
+        f"┌ Всего пакетов: <b>{stats.total}</b>",
+        f"├ ⚠️ Outdated: <b>{stats.outdated}</b> ({stats.outdated_percentage:.1f}%)",
+        f"│ {bar}",
+        f"├ ✅ Newest: {stats.newest}",
+        f"└ ℹ️ Другие: {stats.other}",
+    ]
+
+    if stats.last_check:
+        lines.append(f"\n🕐 Обновлено: <i>{format_datetime(stats.last_check)}</i>")
+
+    return "\n".join(lines)
+
+
+def format_datetime(dt: datetime) -> str:
+    """
+    Format datetime in Russian locale.
+    
+    Args:
+        dt: Datetime object
+        
+    Returns:
+        Formatted string
+    """
+    return dt.strftime("%d.%m.%Y %H:%M")
+
+
+def format_user_info(name: str, telegram_id: int, emails: List[str]) -> str:
+    """
+    Format user information.
+
+    Args:
+        name: User name
+        telegram_id: Telegram ID
+        emails: List of emails
+
+    Returns:
+        Formatted message
+    """
+    lines = [
+        f"👤 <b>Профиль</b>\n",
+        f"<b>{name}</b>",
+        f"<code>ID: {telegram_id}</code>\n",
+        f"📧 <b>Отслеживаемые email:</b>",
+    ]
+
+    for i, email in enumerate(emails, 1):
+        if i == len(emails):
+            lines.append(f"└ <code>{email}</code>")
+        else:
+            lines.append(f"├ <code>{email}</code>")
+
+    return "\n".join(lines)
+
+
+def _get_status_emoji(status: str) -> str:
+    """Get emoji for package status."""
+    emoji_map = {
+        'outdated': '⚠️',
+        'newest': '✅',
+        'devel': '🔧',
+        'unique': '⭐',
+        'legacy': '📦',
+        'incorrect': '❌',
+        'untrusted': '⚠️',
+        'noscheme': '❓',
+        'rolling': '🔄'
+    }
+    return emoji_map.get(status, 'ℹ️')
+
+
+def _plural_packages(count: int) -> str:
+    """Get correct plural form for 'пакет'."""
+    if count % 10 == 1 and count % 100 != 11:
+        return "пакет"
+    elif 2 <= count % 10 <= 4 and (count % 100 < 10 or count % 100 >= 20):
+        return "пакета"
+    else:
+        return "пакетов"
+
+
+def split_message(text: str, max_length: int = 4096) -> List[str]:
+    """
+    Split long message into chunks.
+    
+    Args:
+        text: Message text
+        max_length: Maximum length per message
+        
+    Returns:
+        List of message chunks
+    """
+    if len(text) <= max_length:
+        return [text]
+    
+    chunks = []
+    lines = text.split('\n')
+    current_chunk = []
+    current_length = 0
+    
+    for line in lines:
+        line_length = len(line) + 1  # +1 for newline
+        
+        if current_length + line_length > max_length:
+            # Save current chunk
+            if current_chunk:
+                chunks.append('\n'.join(current_chunk))
+            current_chunk = [line]
+            current_length = line_length
+        else:
+            current_chunk.append(line)
+            current_length += line_length
+    
+    # Add remaining chunk
+    if current_chunk:
+        chunks.append('\n'.join(current_chunk))
+    
+    return chunks

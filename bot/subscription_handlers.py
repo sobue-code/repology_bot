@@ -1,0 +1,225 @@
+"""Handlers for subscription management."""
+import logging
+from aiogram import Router, F
+from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
+
+from bot import keyboards
+from core.database import Database
+
+logger = logging.getLogger(__name__)
+
+# Create router
+router = Router()
+
+
+# Helper function
+async def safe_answer_callback(callback: CallbackQuery, text: str = "", show_alert: bool = False):
+    """Safely answer callback query, ignoring timeout errors."""
+    try:
+        await callback.answer(text, show_alert=show_alert)
+    except TelegramBadRequest as e:
+        if "query is too old" in str(e):
+            logger.debug(f"Callback query too old, ignoring: {e}")
+        else:
+            raise
+
+
+@router.message(Command("subscribe"))
+@router.callback_query(F.data == "subscribe")
+async def cmd_subscribe(event: Message | CallbackQuery):
+    """Handle /subscribe command or callback."""
+    text = "🔔 Настройка уведомлений\n\nВыберите частоту проверки:"
+    keyboard = keyboards.subscription_menu_keyboard()
+    
+    if isinstance(event, Message):
+        await event.answer(text, reply_markup=keyboard)
+    else:
+        await event.message.edit_text(text, reply_markup=keyboard)
+        await safe_answer_callback(event)
+
+
+@router.callback_query(F.data == "sub_daily")
+async def callback_subscribe_daily(callback: CallbackQuery):
+    """Handle daily subscription."""
+    text = "⏰ Ежедневные уведомления\n\nВыберите время проверки:"
+    keyboard = keyboards.time_selection_keyboard("daily")
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await safe_answer_callback(callback)
+
+
+@router.callback_query(F.data == "sub_weekly")
+async def callback_subscribe_weekly(callback: CallbackQuery):
+    """Handle weekly subscription."""
+    text = "📅 Еженедельные уведомления\n\nВыберите время проверки:"
+    keyboard = keyboards.time_selection_keyboard("weekly")
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await safe_answer_callback(callback)
+
+
+@router.callback_query(F.data.startswith("time_daily:"))
+async def callback_time_daily(callback: CallbackQuery, user_id: int, db: Database):
+    """Handle daily time selection."""
+    time = callback.data.split(":", 1)[1]
+
+    # Delete existing subscription if any
+    await db.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
+
+    # Create new subscription
+    await db.execute("""
+        INSERT INTO subscriptions (user_id, frequency, time, day_of_week, enabled)
+        VALUES (?, 'daily', ?, NULL, 1)
+    """, (user_id, time))
+    
+    text = f"✅ Подписка настроена!\n\nВы будете получать уведомления ежедневно в {time}"
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboards.back_to_menu_keyboard()
+    )
+    await safe_answer_callback(callback, "✅ Подписка создана!")
+    
+    logger.info(f"User {user_id} subscribed to daily notifications at {time}")
+
+
+@router.callback_query(F.data.startswith("time_weekly:"))
+async def callback_time_weekly(callback: CallbackQuery):
+    """Handle weekly time selection."""
+    time = callback.data.split(":", 1)[1]
+    
+    text = f"📅 Выбрано время: {time}\n\nТеперь выберите день недели:"
+    keyboard = keyboards.day_selection_keyboard(time)
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await safe_answer_callback(callback)
+
+
+@router.callback_query(F.data.startswith("day:"))
+async def callback_day_selection(callback: CallbackQuery, user_id: int, db: Database):
+    """Handle day of week selection."""
+    parts = callback.data.split(":")
+    time = parts[1]
+    day_of_week = int(parts[2])
+
+    # Delete existing subscription if any
+    await db.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
+
+    # Create new subscription
+    await db.execute("""
+        INSERT INTO subscriptions (user_id, frequency, time, day_of_week, enabled)
+        VALUES (?, 'weekly', ?, ?, 1)
+    """, (user_id, time, day_of_week))
+    
+    days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    day_name = days[day_of_week]
+    
+    text = f"✅ Подписка настроена!\n\nВы будете получать уведомления еженедельно\nпо {day_name} в {time}"
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboards.back_to_menu_keyboard()
+    )
+    await safe_answer_callback(callback, "✅ Подписка создана!")
+    
+    logger.info(f"User {user_id} subscribed to weekly notifications on day {day_of_week} at {time}")
+
+
+@router.message(Command("unsubscribe"))
+@router.callback_query(F.data == "unsub")
+async def cmd_unsubscribe(event: Message | CallbackQuery, user_id: int, db: Database):
+    """Handle /unsubscribe command or callback."""
+    # Check if user has active subscription
+    sub_row = await db.fetchone(
+        "SELECT * FROM subscriptions WHERE user_id = ? AND enabled = 1",
+        (user_id,)
+    )
+    
+    if sub_row is None:
+        text = "ℹ️ У вас нет активных подписок"
+        
+        if isinstance(event, Message):
+            await event.answer(text, reply_markup=keyboards.back_to_menu_keyboard())
+        else:
+            await event.message.edit_text(text, reply_markup=keyboards.back_to_menu_keyboard())
+            await safe_answer_callback(event)
+        return
+    
+    # Show confirmation
+    from models.user import Subscription
+    sub = Subscription(
+        id=sub_row['id'],
+        user_id=sub_row['user_id'],
+        frequency=sub_row['frequency'],
+        time=sub_row['time'],
+        day_of_week=sub_row['day_of_week'],
+        enabled=sub_row['enabled'],
+        last_notification=sub_row['last_notification'],
+        created_at=sub_row['created_at']
+    )
+    
+    text = f"🔔 Текущая подписка: {sub.description}\n\nОтключить уведомления?"
+    keyboard = keyboards.confirm_keyboard("unsub")
+    
+    if isinstance(event, Message):
+        await event.answer(text, reply_markup=keyboard)
+    else:
+        await event.message.edit_text(text, reply_markup=keyboard)
+        await safe_answer_callback(event)
+
+
+@router.callback_query(F.data.startswith("confirm_unsub"))
+async def callback_confirm_unsubscribe(callback: CallbackQuery, user_id: int, db: Database):
+    """Confirm unsubscription."""
+    # Disable subscription
+    await db.execute(
+        "UPDATE subscriptions SET enabled = 0 WHERE user_id = ?",
+        (user_id,)
+    )
+    
+    text = "✅ Автоматические уведомления отключены\n\nВы всё ещё можете проверять пакеты вручную командой /check"
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboards.back_to_menu_keyboard()
+    )
+    await safe_answer_callback(callback, "✅ Подписка отключена")
+    
+    logger.info(f"User {user_id} unsubscribed from notifications")
+
+
+@router.message(Command("settings"))
+async def cmd_settings(message: Message, user_id: int, db: Database):
+    """Handle /settings command."""
+    # Get current subscription
+    sub_row = await db.fetchone(
+        "SELECT * FROM subscriptions WHERE user_id = ?",
+        (user_id,)
+    )
+    
+    if sub_row is None or not sub_row['enabled']:
+        text = "⚙️ Настройки\n\nУ вас нет активной подписки.\nИспользуйте /subscribe для настройки уведомлений."
+    else:
+        from models.user import Subscription
+        sub = Subscription(
+            id=sub_row['id'],
+            user_id=sub_row['user_id'],
+            frequency=sub_row['frequency'],
+            time=sub_row['time'],
+            day_of_week=sub_row['day_of_week'],
+            enabled=sub_row['enabled'],
+            last_notification=sub_row['last_notification'],
+            created_at=sub_row['created_at']
+        )
+        
+        text = f"⚙️ Настройки\n\n🔔 Текущая подписка: {sub.description}"
+        
+        if sub.last_notification:
+            from utils.formatting import format_datetime
+            text += f"\n\n🕐 Последнее уведомление:\n{format_datetime(sub.last_notification)}"
+        
+        text += "\n\nИспользуйте /subscribe для изменения или /unsubscribe для отключения."
+    
+    await message.answer(text, reply_markup=keyboards.back_to_menu_keyboard())
