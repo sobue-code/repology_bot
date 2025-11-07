@@ -3,6 +3,7 @@ import asyncio
 import logging
 import signal
 import sys
+from typing import Optional
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -20,6 +21,7 @@ from bot.middleware import AuthMiddleware, LoggingMiddleware
 from bot import handlers
 from bot import subscription_handlers
 from bot import maintainer_handlers
+from bot import search_handlers
 
 
 class RepologyBot:
@@ -32,17 +34,18 @@ class RepologyBot:
         # Setup logging first, before any other loggers are created
         setup_logging(self.config.logging)
         self.logger = logging.getLogger(__name__)
-        
-        self.bot: Bot = None
-        self.dp: Dispatcher = None
+
+        self.bot: Optional[Bot] = None
+        self.dp: Optional[Dispatcher] = None
         self.db = None
-        self.repology_client: RepologyClient = None
-        self.rdb_client: RDBClient = None
-        self.package_checker: PackageChecker = None
-        self.notification_service: NotificationService = None
-        self.scheduler: NotificationScheduler = None
+        self.repology_client: Optional[RepologyClient] = None
+        self.rdb_client: Optional[RDBClient] = None
+        self.package_checker: Optional[PackageChecker] = None
+        self.notification_service: Optional[NotificationService] = None
+        self.scheduler: Optional[NotificationScheduler] = None
 
         self.shutdown_event = asyncio.Event()
+        self.polling_task: Optional[asyncio.Task] = None
     
     async def setup(self):
         """Setup bot components."""
@@ -98,6 +101,7 @@ class RepologyBot:
         self.dp.include_router(handlers.router)
         self.dp.include_router(subscription_handlers.router)
         self.dp.include_router(maintainer_handlers.router)
+        self.dp.include_router(search_handlers.router)
 
         # Setup dependency injection
         self.dp['db'] = self.db
@@ -128,71 +132,120 @@ class RepologyBot:
         """Start the bot."""
         try:
             await self.setup()
-            
-            # Setup signal handlers
+
+            # Setup signal handlers that actually work
             loop = asyncio.get_event_loop()
+
+            def signal_handler(signum, frame):
+                self.logger.warning(f"Received signal {signum}")
+                if not self.shutdown_event.is_set():
+                    self.shutdown_event.set()
+                    # Cancel polling task
+                    if self.polling_task and not self.polling_task.done():
+                        self.polling_task.cancel()
+
             for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(
-                    sig,
-                    lambda: asyncio.create_task(self.shutdown())
-                )
-            
+                signal.signal(sig, signal_handler)
+
             self.logger.info("Bot is running. Press Ctrl+C to stop.")
 
-            # Start polling
-            await self.dp.start_polling(self.bot)
+            # Start polling as a task so we can cancel it
+            self.polling_task = asyncio.create_task(
+                self.dp.start_polling(self.bot, handle_signals=False)
+            )
+
+            try:
+                await self.polling_task
+            except asyncio.CancelledError:
+                self.logger.info("Polling cancelled by signal")
 
         except Exception as e:
             self.logger.error(f"Error starting bot: {e}", exc_info=True)
+        finally:
             await self.shutdown()
-            sys.exit(1)
 
     async def shutdown(self):
         """Graceful shutdown."""
-        if self.shutdown_event.is_set():
+        # Use a local flag to prevent re-entry
+        if hasattr(self, '_shutting_down'):
             return
+        self._shutting_down = True
 
-        self.shutdown_event.set()
         self.logger.info("Shutting down bot...")
 
-        # Stop scheduler
-        if self.scheduler:
-            await self.scheduler.stop()
+        try:
+            # Cancel polling task first
+            if self.polling_task and not self.polling_task.done():
+                self.logger.info("Cancelling polling task...")
+                self.polling_task.cancel()
+                try:
+                    await asyncio.wait_for(self.polling_task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
 
-        # Stop polling
-        if self.dp:
-            await self.dp.stop_polling()
+            # Stop scheduler
+            if self.scheduler:
+                self.logger.info("Stopping scheduler...")
+                try:
+                    await asyncio.wait_for(self.scheduler.stop(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    self.logger.warning("Scheduler stop timeout")
 
-        # Close bot session
-        if self.bot:
-            await self.bot.session.close()
+            # Close all sessions concurrently with short timeout
+            close_tasks = []
 
-        # Close Repology client
-        if self.repology_client:
-            await self.repology_client.close()
+            if self.bot and hasattr(self.bot, 'session') and self.bot.session:
+                close_tasks.append(self.bot.session.close())
 
-        # Close RDB client
-        if self.rdb_client:
-            await self.rdb_client.close()
+            if self.repology_client:
+                close_tasks.append(self.repology_client.close())
 
-        # Close database
-        if self.db:
-            await self.db.disconnect()
+            if self.rdb_client:
+                close_tasks.append(self.rdb_client.close())
 
-        self.logger.info("Bot stopped")
+            if self.db:
+                close_tasks.append(self.db.disconnect())
+
+            if close_tasks:
+                self.logger.info(f"Closing {len(close_tasks)} connections...")
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*close_tasks, return_exceptions=True),
+                        timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.warning("Connection close timeout")
+
+            self.logger.info("Shutdown complete")
+
+        except Exception as e:
+            self.logger.error(f"Error during shutdown: {e}", exc_info=True)
 
 
 async def main():
     """Main entry point."""
     bot = RepologyBot()
-    await bot.start()
+    try:
+        await bot.start()
+    except KeyboardInterrupt:
+        logging.info("Received keyboard interrupt")
+    except Exception as e:
+        logging.error(f"Fatal error in main: {e}", exc_info=True)
+        raise
+    finally:
+        # Ensure we exit cleanly
+        logging.info("Main coroutine completed")
 
 
 if __name__ == '__main__':
+    exit_code = 0
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nBot stopped by user")
     except Exception as e:
         print(f"Fatal error: {e}")
-        sys.exit(1)
+        exit_code = 1
+    finally:
+        # Force exit to prevent hanging
+        sys.exit(exit_code)

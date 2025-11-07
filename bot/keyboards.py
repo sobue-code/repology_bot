@@ -6,6 +6,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     """Create main menu keyboard."""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Поиск пакетов", callback_data="search")],
         [InlineKeyboardButton(text="🔍 Проверить пакеты", callback_data="check")],
         [InlineKeyboardButton(text="👤 Мои мантейнеры", callback_data="maintainers")],
         [InlineKeyboardButton(text="🔔 Настроить уведомления", callback_data="subscribe")],
@@ -319,5 +320,115 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
     """Create cancel keyboard."""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_maintainer")]
+    ])
+    return keyboard
+
+
+# ===== Search Keyboards =====
+
+def cancel_search_keyboard() -> InlineKeyboardMarkup:
+    """Create keyboard for canceling search."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_search")]
+    ])
+    return keyboard
+
+
+def search_results_keyboard(
+    results: List[dict],
+    query: str,
+    page: int,
+    total_pages: int
+) -> InlineKeyboardMarkup:
+    """
+    Create keyboard with search results list.
+
+    Args:
+        results: List of packages for current page
+        query: Search query
+        page: Current page (0-indexed)
+        total_pages: Total number of pages
+
+    Returns:
+        InlineKeyboardMarkup
+    """
+    buttons = []
+
+    # Buttons for each package
+    for pkg in results:
+        name = pkg['name']
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"📦 {name}",
+                callback_data=f"search_result:{name}"
+            )
+        ])
+
+    # Navigation (if more than one page)
+    if total_pages > 1:
+        nav_row = []
+
+        if page > 0:
+            nav_row.append(InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"search_page:{query}:{page - 1}"
+            ))
+
+        nav_row.append(InlineKeyboardButton(
+            text=f"📄 {page + 1}/{total_pages}",
+            callback_data="noop"
+        ))
+
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"search_page:{query}:{page + 1}"
+            ))
+
+        buttons.append(nav_row)
+
+    # Back to menu button
+    buttons.append([
+        InlineKeyboardButton(text="◀️ Главное меню", callback_data="menu")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def package_details_keyboard(package_name: str, search_query: str = "") -> InlineKeyboardMarkup:
+    """
+    Create keyboard for package details.
+
+    Args:
+        package_name: Package name
+        search_query: Search query (for back to results button)
+
+    Returns:
+        InlineKeyboardMarkup
+    """
+    buttons = []
+
+    # Back to results button (if there's a search query)
+    if search_query:
+        buttons.append([
+            InlineKeyboardButton(
+                text="◀️ Назад к результатам",
+                callback_data=f"back_to_search:{search_query}"
+            )
+        ])
+
+    # Main menu button
+    buttons.append([
+        InlineKeyboardButton(text="◀️ Главное меню", callback_data="menu")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def back_to_search_keyboard() -> InlineKeyboardMarkup:
+    """Create keyboard for returning to search."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Новый поиск", callback_data="search")],
+        [InlineKeyboardButton(text="◀️ Главное меню", callback_data="menu")]
     ])
     return keyboard

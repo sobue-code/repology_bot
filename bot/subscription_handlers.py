@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-# Helper function
+# Helper functions
 async def safe_answer_callback(callback: CallbackQuery, text: str = "", show_alert: bool = False):
     """Safely answer callback query, ignoring timeout errors."""
     try:
@@ -22,6 +22,18 @@ async def safe_answer_callback(callback: CallbackQuery, text: str = "", show_ale
     except TelegramBadRequest as e:
         if "query is too old" in str(e):
             logger.debug(f"Callback query too old, ignoring: {e}")
+        else:
+            raise
+
+
+async def safe_edit_message(message: Message, text: str, **kwargs):
+    """Safely edit message, ignoring 'message is not modified' errors."""
+    try:
+        await message.edit_text(text, **kwargs)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Message is already in the correct state, ignore
+            logger.debug("Message not modified, content is the same")
         else:
             raise
 
@@ -46,7 +58,7 @@ async def callback_subscribe_daily(callback: CallbackQuery):
     text = "⏰ Ежедневные уведомления\n\nВыберите время проверки:"
     keyboard = keyboards.time_selection_keyboard("daily")
     
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await safe_edit_message(callback.message,text, reply_markup=keyboard)
     await safe_answer_callback(callback)
 
 
@@ -56,7 +68,7 @@ async def callback_subscribe_weekly(callback: CallbackQuery):
     text = "📅 Еженедельные уведомления\n\nВыберите время проверки:"
     keyboard = keyboards.time_selection_keyboard("weekly")
     
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await safe_edit_message(callback.message,text, reply_markup=keyboard)
     await safe_answer_callback(callback)
 
 
@@ -76,7 +88,7 @@ async def callback_time_daily(callback: CallbackQuery, user_id: int, db: Databas
     
     text = f"✅ Подписка настроена!\n\nВы будете получать уведомления ежедневно в {time}"
     
-    await callback.message.edit_text(
+    await safe_edit_message(callback.message,
         text,
         reply_markup=keyboards.back_to_menu_keyboard()
     )
@@ -93,7 +105,7 @@ async def callback_time_weekly(callback: CallbackQuery):
     text = f"📅 Выбрано время: {time}\n\nТеперь выберите день недели:"
     keyboard = keyboards.day_selection_keyboard(time)
     
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await safe_edit_message(callback.message,text, reply_markup=keyboard)
     await safe_answer_callback(callback)
 
 
@@ -118,7 +130,7 @@ async def callback_day_selection(callback: CallbackQuery, user_id: int, db: Data
     
     text = f"✅ Подписка настроена!\n\nВы будете получать уведомления еженедельно\nпо {day_name} в {time}"
     
-    await callback.message.edit_text(
+    await safe_edit_message(callback.message,
         text,
         reply_markup=keyboards.back_to_menu_keyboard()
     )
@@ -181,7 +193,7 @@ async def callback_confirm_unsubscribe(callback: CallbackQuery, user_id: int, db
     
     text = "✅ Автоматические уведомления отключены\n\nВы всё ещё можете проверять пакеты вручную командой /check"
     
-    await callback.message.edit_text(
+    await safe_edit_message(callback.message,
         text,
         reply_markup=keyboards.back_to_menu_keyboard()
     )

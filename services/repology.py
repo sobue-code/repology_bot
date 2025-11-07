@@ -50,7 +50,7 @@ class RepologyClient:
     async def close(self):
         """Close HTTP session."""
         if self.session:
-            await self.session.close()
+            await asyncio.wait_for(self.session.close(), timeout=2.0)
             self.session = None
             logger.info("Repology client session closed")
     
@@ -263,3 +263,53 @@ class RepologyClient:
         
         logger.info(f"Found {len(outdated)} outdated packages for {maintainer}")
         return outdated
+    
+    async def get_project_info(self, project: str) -> Optional[Dict[str, List[dict]]]:
+        """
+        Get full information about a project with all distributions.
+        
+        Args:
+            project: Project name
+            
+        Returns:
+            Dictionary where keys are repository names and values are lists of package dicts,
+            or None if project not found
+        """
+        try:
+            data = await self._request(f"project/{project}")
+            
+            if not data or not isinstance(data, list):
+                logger.debug(f"Project '{project}' not found or empty response")
+                return None
+            
+            # Group packages by repository
+            repo_dict = {}
+            for pkg_data in data:
+                repo = pkg_data.get('repo', '')
+                if repo not in repo_dict:
+                    repo_dict[repo] = []
+                
+                repo_dict[repo].append({
+                    "repo": repo,
+                    "name": pkg_data.get('name', project),
+                    "version": pkg_data.get('version', ''),
+                    "status": pkg_data.get('status', ''),
+                    "maintainers": pkg_data.get('maintainers', []),
+                    "licenses": pkg_data.get('licenses', []),
+                    "summary": pkg_data.get('summary', ''),
+                    "categories": pkg_data.get('categories', []),
+                    "links": pkg_data.get('links', [])
+                })
+            
+            logger.info(f"Found project '{project}' in {len(repo_dict)} repositories")
+            return repo_dict
+            
+        except aiohttp.ClientResponseError as e:
+            if e.status == 404:
+                logger.debug(f"Project '{project}' not found in Repology")
+                return None
+            logger.error(f"Repology API error for project '{project}': {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get project info for '{project}': {e}", exc_info=True)
+            return None

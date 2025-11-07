@@ -52,7 +52,7 @@ class NotificationScheduler:
     async def stop(self):
         """Stop the scheduler."""
         if self.scheduler is not None:
-            self.scheduler.shutdown()
+            self.scheduler.shutdown(wait=False)
             self.scheduler = None
             logger.info("Scheduler stopped")
     

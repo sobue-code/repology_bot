@@ -1,4 +1,5 @@
 """ALT Linux RDB API client."""
+import asyncio
 import logging
 from typing import List, Optional, Dict
 from datetime import datetime
@@ -68,7 +69,7 @@ class RDBClient:
     async def close(self):
         """Close the client session."""
         if self.session and not self.session.closed:
-            await self.session.close()
+            await asyncio.wait_for(self.session.close(), timeout=2.0)
 
     async def get_packages_by_maintainer(
         self,
@@ -225,3 +226,150 @@ class RDBClient:
         except Exception as e:
             logger.error(f"Unexpected error validating maintainer '{nickname}': {e}")
             return True
+
+    async def search_packages(self, query: str, limit: int = 50) -> List[dict]:
+        """
+        Search packages in RDB by name (full or partial).
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results (default: 50)
+
+        Returns:
+            List of dictionaries with package information
+        """
+        session = await self._get_session()
+
+        url = f"{self.base_url}/find_packages"
+        params = {
+            "name": query
+            # Note: branch parameter is not used in find_packages endpoint
+            # We filter by branch after getting results
+        }
+
+        logger.info(f"Searching RDB packages with query: {query}")
+
+        try:
+            async with session.get(url, params=params) as response:
+                if response.status == 404:
+                    logger.debug(f"No packages found for query: {query}")
+                    return []
+
+                response.raise_for_status()
+                data = await response.json()
+
+                packages = []
+                seen_names = set()  # For deduplication
+
+                # Process packages from response
+                for pkg in data.get('packages', []):
+                    name = pkg.get('name')
+                    if not name or name in seen_names:
+                        continue
+
+                    seen_names.add(name)
+
+                    # Find sisyphus version (prefer main sisyphus, fallback to other sisyphus variants)
+                    sisyphus_version = None
+                    for version_info in pkg.get('versions', []):
+                        branch = version_info.get('branch', '')
+                        if branch == 'sisyphus':
+                            sisyphus_version = version_info
+                            break
+                    
+                    # If no main sisyphus, try any sisyphus variant
+                    if not sisyphus_version:
+                        for version_info in pkg.get('versions', []):
+                            branch = version_info.get('branch', '')
+                            if 'sisyphus' in branch.lower():
+                                sisyphus_version = version_info
+                                break
+
+                    if not sisyphus_version:
+                        continue  # Skip if no sisyphus version
+
+                    packages.append({
+                        "name": name,
+                        "version": sisyphus_version.get('version', ''),
+                        "release": sisyphus_version.get('release', ''),
+                        "branch": sisyphus_version.get('branch', 'sisyphus'),
+                        "maintainer": pkg.get('maintainer', ''),
+                        "summary": pkg.get('summary', ''),
+                        "url": pkg.get('url', '')
+                    })
+
+                logger.info(f"Found {len(packages)} packages in RDB for query: {query}")
+                return packages
+
+        except aiohttp.ClientTimeout:
+            logger.error(f"RDB search timeout for query: {query}")
+            return []
+        except aiohttp.ClientError as e:
+            logger.error(f"RDB search error for query '{query}': {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error in RDB search: {e}", exc_info=True)
+            raise
+
+    async def get_package_details(self, package_name: str, branch: str = "sisyphus") -> Optional[dict]:
+        """
+        Get detailed information about a specific package.
+
+        Args:
+            package_name: Package name
+            branch: Repository branch (default: "sisyphus")
+
+        Returns:
+            Dictionary with detailed package information or None if not found
+        """
+        session = await self._get_session()
+
+        url = f"{self.base_url}/package/{package_name}"
+        params = {
+            "branch": branch
+        }
+
+        logger.info(f"Fetching RDB package details: {package_name} (branch: {branch})")
+
+        try:
+            async with session.get(url, params=params) as response:
+                if response.status == 404:
+                    logger.debug(f"Package not found: {package_name}")
+                    return None
+
+                response.raise_for_status()
+                data = await response.json()
+
+                # Extract package information
+                pkg_info = {
+                    "name": data.get('name', package_name),
+                    "version": data.get('version', ''),
+                    "release": data.get('release', ''),
+                    "epoch": data.get('epoch'),
+                    "arch": data.get('arch', ''),
+                    "branch": data.get('branch', branch),
+                    "maintainer": data.get('maintainer', {}),
+                    "summary": data.get('summary', ''),
+                    "description": data.get('description', ''),
+                    "license": data.get('license', ''),
+                    "url": data.get('url', ''),
+                    "source_rpm": data.get('source_rpm', ''),
+                    "build_time": data.get('build_time', ''),
+                    "packager": data.get('packager', ''),
+                    "changelog": data.get('changelog', []),
+                    "dependencies": data.get('dependencies', {}),
+                    "files": data.get('files', [])
+                }
+
+                logger.debug(f"Successfully fetched details for {package_name}")
+                return pkg_info
+
+        except aiohttp.ClientTimeout:
+            logger.error(f"RDB get_package_details timeout for: {package_name}")
+            return None
+        except aiohttp.ClientError as e:
+            logger.error(f"RDB get_package_details error for '{package_name}': {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error in get_package_details: {e}", exc_info=True)
+            raise

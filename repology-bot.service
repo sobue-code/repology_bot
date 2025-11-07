@@ -12,6 +12,10 @@ WorkingDirectory=WORKDIR_PLACEHOLDER
 # Use uv to run the bot
 ExecStart=/usr/bin/env uv run python main.py
 
+# Graceful shutdown timeout
+TimeoutStopSec=10
+KillMode=mixed
+
 # Restart policy
 Restart=always
 RestartSec=10

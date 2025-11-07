@@ -97,11 +97,3 @@ echo "✅ Сервис установлен и запущен!"
 echo
 echo "Проверка статуса:"
 sudo systemctl status repology-bot.service --no-pager
-echo
-echo "Полезные команды:"
-echo "  sudo systemctl status repology-bot.service    # Статус"
-echo "  sudo systemctl restart repology-bot.service   # Перезапуск"
-echo "  sudo systemctl stop repology-bot.service      # Остановка"
-echo "  sudo journalctl -u repology-bot.service -f    # Логи"
-echo
-echo "📖 Подробная документация: SYSTEMD.md"

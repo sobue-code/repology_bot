@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-# Helper function
+# Helper functions
 async def safe_answer_callback(callback: CallbackQuery, text: str = "", show_alert: bool = False):
     """Safely answer callback query, ignoring timeout errors."""
     try:
@@ -31,6 +31,18 @@ async def safe_answer_callback(callback: CallbackQuery, text: str = "", show_ale
     except TelegramBadRequest as e:
         if "query is too old" in str(e):
             logger.debug(f"Callback query too old, ignoring: {e}")
+        else:
+            raise
+
+
+async def safe_edit_message(message: Message, text: str, **kwargs):
+    """Safely edit message, ignoring 'message is not modified' errors."""
+    try:
+        await message.edit_text(text, **kwargs)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Message is already in the correct state, ignore
+            logger.debug("Message not modified, content is the same")
         else:
             raise
 
@@ -187,7 +199,7 @@ async def callback_check_email(
     if email == "all":
         # Check all emails
         emails = await db.get_user_emails(user_id)
-        await callback.message.edit_text("🔄 Проверяю все email...")
+        await safe_edit_message(callback.message,"🔄 Проверяю все email...")
 
         for i, email_addr in enumerate(emails):
             # Добавляем кнопку только к последнему email
@@ -204,7 +216,7 @@ async def callback_check_email(
     else:
         # Show options for single email
         keyboard = keyboards.check_options_keyboard(email)
-        await callback.message.edit_text(
+        await safe_edit_message(callback.message,
             f"📧 Проверка: {email}\n\nВыберите действие:",
             reply_markup=keyboard
         )
@@ -219,7 +231,7 @@ async def callback_check_outdated(
     """Check only outdated packages."""
     email = callback.data.split(":", 1)[1]
     
-    await callback.message.edit_text(f"🔄 Проверяю outdated пакеты для {email}...")
+    await safe_edit_message(callback.message,f"🔄 Проверяю outdated пакеты для {email}...")
     await safe_answer_callback(callback)
     
     await send_package_check(callback.message, email, package_checker, only_outdated=True)
@@ -233,7 +245,7 @@ async def callback_check_all(
     """Check all packages."""
     email = callback.data.split(":", 1)[1]
     
-    await callback.message.edit_text(f"🔄 Проверяю все пакеты для {email}...")
+    await safe_edit_message(callback.message,f"🔄 Проверяю все пакеты для {email}...")
     await safe_answer_callback(callback)
     
     await send_package_check(callback.message, email, package_checker, only_outdated=False)
@@ -247,7 +259,7 @@ async def callback_check_refresh(
     """Check packages with cache refresh."""
     email = callback.data.split(":", 1)[1]
 
-    await callback.message.edit_text(f"🔄 Обновляю кэш и проверяю пакеты для {email}...")
+    await safe_edit_message(callback.message,f"🔄 Обновляю кэш и проверяю пакеты для {email}...")
     await safe_answer_callback(callback)
 
     await send_package_check(callback.message, email, package_checker, only_outdated=True, force_refresh=True)
@@ -278,7 +290,7 @@ async def callback_page_check(
         keyboard = keyboards.back_to_menu_keyboard()
 
     try:
-        await callback.message.edit_text(text, reply_markup=keyboard)
+        await safe_edit_message(callback.message,text, reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Failed to edit message: {e}")
         await callback.message.answer(text, reply_markup=keyboard)
@@ -326,7 +338,7 @@ async def callback_stats_email(
     if email == "all":
         # Show stats for all emails
         emails = await db.get_user_emails(user_id)
-        await callback.message.edit_text("🔄 Получаю статистику...")
+        await safe_edit_message(callback.message,"🔄 Получаю статистику...")
 
         for i, email_addr in enumerate(emails):
             stats = await package_checker.get_package_stats(email_addr)
@@ -341,12 +353,12 @@ async def callback_stats_email(
         await safe_answer_callback(callback, "✅ Готово!")
     else:
         # Show stats for single email
-        await callback.message.edit_text(f"🔄 Получаю статистику для {email}...")
+        await safe_edit_message(callback.message,f"🔄 Получаю статистику для {email}...")
 
         stats = await package_checker.get_package_stats(email)
         text = format_package_stats(stats)
 
-        await callback.message.edit_text(
+        await safe_edit_message(callback.message,
             text,
             reply_markup=keyboards.back_to_menu_keyboard()
         )
@@ -378,7 +390,7 @@ async def callback_page_stats(
         keyboard = keyboards.back_to_menu_keyboard()
 
     try:
-        await callback.message.edit_text(text, reply_markup=keyboard)
+        await safe_edit_message(callback.message,text, reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Failed to edit message: {e}")
         await callback.message.answer(text, reply_markup=keyboard)
@@ -390,7 +402,7 @@ async def callback_page_stats(
 async def callback_menu(callback: CallbackQuery, user: dict):
     """Return to main menu."""
     name = user['name']
-    await callback.message.edit_text(
+    await safe_edit_message(callback.message,
         f"👋 {name}, выберите действие:",
         reply_markup=keyboards.main_menu_keyboard()
     )
@@ -400,7 +412,7 @@ async def callback_menu(callback: CallbackQuery, user: dict):
 @router.callback_query(F.data == "cancel")
 async def callback_cancel(callback: CallbackQuery):
     """Cancel action."""
-    await callback.message.edit_text("❌ Отменено")
+    await safe_edit_message(callback.message,"❌ Отменено")
     await safe_answer_callback(callback)
 
 

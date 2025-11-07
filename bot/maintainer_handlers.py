@@ -24,7 +24,7 @@ class AddMaintainerStates(StatesGroup):
     waiting_for_nickname = State()
 
 
-# Helper function
+# Helper functions
 async def safe_answer_callback(callback: CallbackQuery, text: str = "", show_alert: bool = False):
     """Safely answer callback query, ignoring timeout errors."""
     try:
@@ -36,12 +36,24 @@ async def safe_answer_callback(callback: CallbackQuery, text: str = "", show_ale
             raise
 
 
+async def safe_edit_message(message: Message, text: str, **kwargs):
+    """Safely edit message, ignoring 'message is not modified' errors."""
+    try:
+        await message.edit_text(text, **kwargs)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Message is already in the correct state, ignore
+            logger.debug("Message not modified, content is the same")
+        else:
+            raise
+
+
 # ===== Maintainers Menu =====
 
 @router.callback_query(F.data == "maintainers")
 async def callback_maintainers_menu(callback: CallbackQuery):
     """Show maintainers management menu."""
-    await callback.message.edit_text(
+    await safe_edit_message(callback.message,
         "👤 Управление подписками на мантейнеров\n\n"
         "Здесь вы можете добавлять и удалять мантейнеров, "
         "за пакетами которых хотите следить.",
@@ -58,14 +70,16 @@ async def callback_list_maintainers(callback: CallbackQuery, user_id: int, db: D
     maintainers = await db.get_user_maintainer_subscriptions(user_id)
 
     if not maintainers:
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback.message,
             "📋 У вас пока нет подписок на мантейнеров.\n\n"
             "Используйте кнопку 'Добавить мантейнера' для добавления.",
             reply_markup=keyboards.maintainers_menu_keyboard()
         )
     else:
         text = f"📋 Ваши подписки ({len(maintainers)}):\n\n"
-        await callback.message.edit_text(
+        await safe_edit_message(
+            callback.message,
             text,
             reply_markup=keyboards.maintainers_list_keyboard(maintainers)
         )
@@ -84,7 +98,7 @@ async def callback_maintainer_info(callback: CallbackQuery, user_id: int, db: Da
     exists = await db.check_maintainer_subscription_exists(user_id, nickname)
 
     if not exists:
-        await callback.message.edit_text(
+        await safe_edit_message(callback.message,
             "❌ Подписка не найдена",
             reply_markup=keyboards.maintainers_menu_keyboard()
         )
@@ -105,7 +119,7 @@ async def callback_maintainer_info(callback: CallbackQuery, user_id: int, db: Da
     else:
         text = f"👤 Мантейнер: {nickname}\n📧 Email: {nickname}@altlinux.org\n"
 
-    await callback.message.edit_text(
+    await safe_edit_message(callback.message,
         text,
         reply_markup=keyboards.maintainer_actions_keyboard(nickname)
     )
@@ -117,7 +131,7 @@ async def callback_maintainer_info(callback: CallbackQuery, user_id: int, db: Da
 @router.callback_query(F.data == "add_maintainer")
 async def callback_add_maintainer(callback: CallbackQuery, state: FSMContext):
     """Start adding a maintainer."""
-    await callback.message.edit_text(
+    await safe_edit_message(callback.message,
         "➕ Добавление мантейнера\n\n"
         "Введите nickname мантейнера в RDB (ALT Linux).\n"
         "Например: sobue, amakeenk\n\n"
@@ -195,7 +209,7 @@ async def process_maintainer_nickname(
 async def callback_cancel_add_maintainer(callback: CallbackQuery, state: FSMContext):
     """Cancel adding maintainer."""
     await state.clear()
-    await callback.message.edit_text(
+    await safe_edit_message(callback.message,
         "❌ Добавление отменено",
         reply_markup=keyboards.maintainers_menu_keyboard()
     )
@@ -214,14 +228,14 @@ async def callback_confirm_add_maintainer(
     success = await db.add_maintainer_subscription(user_id, nickname)
 
     if success:
-        await callback.message.edit_text(
+        await safe_edit_message(callback.message,
             f"✅ Подписка на мантейнера '{nickname}' добавлена!\n"
             f"📧 Email: {nickname}@altlinux.org\n\n"
             f"⚠️ Обратите внимание: мантейнер не был найден в RDB при проверке.",
             reply_markup=keyboards.maintainers_menu_keyboard()
         )
     else:
-        await callback.message.edit_text(
+        await safe_edit_message(callback.message,
             f"❌ Не удалось добавить подписку.",
             reply_markup=keyboards.maintainers_menu_keyboard()
         )
@@ -243,12 +257,12 @@ async def callback_remove_maintainer(
     success = await db.remove_maintainer_subscription(user_id, nickname)
 
     if success:
-        await callback.message.edit_text(
+        await safe_edit_message(callback.message,
             f"✅ Подписка на мантейнера '{nickname}' удалена",
             reply_markup=keyboards.maintainers_menu_keyboard()
         )
     else:
-        await callback.message.edit_text(
+        await safe_edit_message(callback.message,
             f"❌ Не удалось удалить подписку (возможно, она уже была удалена)",
             reply_markup=keyboards.maintainers_menu_keyboard()
         )

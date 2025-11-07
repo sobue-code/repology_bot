@@ -1,6 +1,6 @@
 """Message formatting utilities."""
 import logging
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 
 from models.package import PackageInfo, PackageStats
@@ -289,3 +289,225 @@ def split_message(text: str, max_length: int = 4096) -> List[str]:
         chunks.append('\n'.join(current_chunk))
     
     return chunks
+
+
+# ===== Package Search Formatting =====
+
+def format_package_details(
+    package_name: str,
+    rdb_info: Optional[dict],
+    repology_info: Optional[dict]
+) -> str:
+    """
+    Format detailed package information.
+
+    Args:
+        package_name: Package name
+        rdb_info: Information from RDB
+        repology_info: Information from Repology
+
+    Returns:
+        Formatted text for Telegram (HTML)
+    """
+    import html
+    
+    # Escape package name for HTML
+    safe_name = html.escape(package_name)
+    lines = [f"📦 <b>{safe_name}</b>\n"]
+
+    # === Information from RDB (ALT Linux) ===
+    if rdb_info:
+        lines.append("🐧 <b>ALT Linux</b>")
+
+        version = rdb_info.get('version', 'N/A')
+        release = rdb_info.get('release', '')
+        full_version = f"{version}-{release}" if release else version
+        lines.append(f"  • Версия: <code>{html.escape(full_version)}</code>")
+
+        branch = rdb_info.get('branch', 'sisyphus')
+        lines.append(f"  • Ветка: <b>{html.escape(branch)}</b>")
+
+        maintainer = rdb_info.get('maintainer', {})
+        if isinstance(maintainer, dict):
+            maint_name = maintainer.get('name', 'Unknown')
+            maint_nick = maintainer.get('nickname', '')
+            if maint_nick:
+                lines.append(f"  • Мантейнер: {html.escape(maint_name)} (<code>@{html.escape(maint_nick)}</code>)")
+            else:
+                lines.append(f"  • Мантейнер: {html.escape(maint_name)}")
+        elif isinstance(maintainer, str):
+            lines.append(f"  • Мантейнер: {html.escape(maintainer)}")
+
+        # Description
+        summary = rdb_info.get('summary', '')
+        if summary:
+            lines.append(f"  • Описание: <i>{html.escape(summary)}</i>")
+
+        # License
+        license_info = rdb_info.get('license', '')
+        if license_info:
+            lines.append(f"  • Лицензия: <code>{html.escape(license_info)}</code>")
+
+        # Homepage
+        url = rdb_info.get('url', '')
+        if url:
+            lines.append(f"  • Сайт: {url}")
+
+        # Build date
+        build_time = rdb_info.get('build_time', '')
+        if build_time:
+            formatted_time = format_datetime(build_time)
+            lines.append(f"  • Дата сборки: {formatted_time}")
+
+        # Link to packages.altlinux.org
+        alt_link = f"https://packages.altlinux.org/en/sisyphus/srpms/{package_name}/"
+        lines.append(f"  • Ссылка: {alt_link}")
+
+        lines.append("")
+
+    # === Information from Repology ===
+    if repology_info:
+        lines.append("🌐 <b>Repology</b>")
+
+        # Find newest version
+        newest_version = find_newest_version(repology_info)
+        if newest_version:
+            lines.append(f"  • Новейшая версия: <code>{html.escape(newest_version)}</code>")
+
+        # Check status in ALT Linux
+        alt_status = get_altlinux_status(repology_info)
+        if alt_status:
+            status_emoji = {
+                'newest': '✅',
+                'outdated': '⚠️',
+                'legacy': '🔴',
+                'unique': '🔵',
+                'devel': '🔧',
+                'noscheme': '❓'
+            }.get(alt_status, '❓')
+            lines.append(f"  • Статус ALT: {status_emoji} {alt_status}")
+
+        # RPM-based distributions
+        rpm_distros = filter_rpm_distros(repology_info)
+        if rpm_distros:
+            lines.append(f"\n📊 <b>RPM дистрибутивы</b> (найдено: {len(rpm_distros)})")
+
+            # Sort by distribution name
+            sorted_distros = sorted(rpm_distros.items(), key=lambda x: x[0])
+
+            for repo, packages in sorted_distros[:15]:  # Limit to 15
+                distro_name = format_distro_name(repo)
+
+                # Take first package from list
+                pkg = packages[0] if packages else {}
+                version = pkg.get('version', 'N/A')
+                status = pkg.get('status', '')
+
+                status_emoji = {
+                    'newest': '✅',
+                    'outdated': '⚠️',
+                    'legacy': '🔴',
+                    'unique': '🔵',
+                    'devel': '🔧'
+                }.get(status, '')
+
+                lines.append(f"  • {distro_name}: <code>{html.escape(version)}</code> {status_emoji}")
+
+            if len(rpm_distros) > 15:
+                lines.append(f"  <i>... и ещё {len(rpm_distros) - 15}</i>")
+
+        # Link to Repology
+        repology_link = f"https://repology.org/project/{package_name}/versions"
+        lines.append(f"\n  • Подробнее: {repology_link}")
+
+    # If no information from any source
+    if not rdb_info and not repology_info:
+        lines.append("❌ Информация о пакете не найдена.")
+
+    result = "\n".join(lines)
+    
+    # Ensure message is not too long
+    if len(result) > 4096:
+        # Truncate if needed
+        result = result[:4000] + "\n\n<i>... (сообщение обрезано)</i>"
+    
+    return result
+
+
+def find_newest_version(repology_info: dict) -> Optional[str]:
+    """
+    Find the newest version from all distributions.
+    """
+    newest = None
+    for repo, packages in repology_info.items():
+        for pkg in packages:
+            if pkg.get('status') == 'newest':
+                version = pkg.get('version')
+                if version:
+                    return version
+    return newest
+
+
+def get_altlinux_status(repology_info: dict) -> Optional[str]:
+    """
+    Get package status in ALT Linux.
+    """
+    for repo, packages in repology_info.items():
+        if repo.startswith('altlinux_'):
+            if packages:
+                return packages[0].get('status')
+    return None
+
+
+def filter_rpm_distros(repology_info: dict) -> dict:
+    """
+    Filter only RPM-based distributions.
+    """
+    rpm_prefixes = [
+        'altlinux_',
+        'fedora_',
+        'opensuse_',
+        'mageia_',
+        'rosa_',
+        'openmandriva_',
+        'pclinuxos',
+        'centos_',
+        'rhel_',
+        'oracle_linux_',
+        'amazon_linux_'
+    ]
+
+    filtered = {}
+    for repo, packages in repology_info.items():
+        if any(repo.startswith(prefix) for prefix in rpm_prefixes):
+            filtered[repo] = packages
+
+    return filtered
+
+
+def format_distro_name(repo: str) -> str:
+    """
+    Format distribution name for readability.
+    """
+    # Dictionary of replacements
+    replacements = {
+        'altlinux_sisyphus': 'ALT Sisyphus',
+        'altlinux_p10': 'ALT P10',
+        'altlinux_p9': 'ALT P9',
+        'fedora_rawhide': 'Fedora Rawhide',
+        'opensuse_tumbleweed': 'openSUSE Tumbleweed',
+        'opensuse_leap': 'openSUSE Leap',
+        'pclinuxos': 'PCLinuxOS',
+    }
+
+    if repo in replacements:
+        return replacements[repo]
+
+    # General processing
+    parts = repo.split('_')
+    if len(parts) >= 2:
+        distro = parts[0].capitalize()
+        version = ' '.join(parts[1:]).upper()
+        return f"{distro} {version}"
+
+    return repo.capitalize()
