@@ -38,16 +38,32 @@ async def safe_answer_callback(callback: CallbackQuery, text: str = "", show_ale
 # ===== Basic Commands =====
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, user: dict, db: Database):
+async def cmd_start(message: Message, user: dict, user_id: int, db: Database):
     """Handle /start command."""
     name = user['name']
-    
-    await message.answer(
-        f"👋 Здравствуйте, {name}!\n\n"
-        f"Я помогу отслеживать outdated пакеты в Repology.\n\n"
-        f"Используйте кнопки ниже для управления:",
-        reply_markup=keyboards.main_menu_keyboard()
-    )
+
+    # Check if user has any maintainer subscriptions
+    maintainers = await db.get_user_maintainer_subscriptions(user_id)
+
+    if not maintainers:
+        # New user - show welcome message with instructions
+        await message.answer(
+            f"👋 Здравствуйте, {name}!\n\n"
+            f"Я помогу отслеживать outdated пакеты в ALT Linux через Repology.\n\n"
+            f"🚀 Для начала работы:\n"
+            f"1. Нажмите '👤 Мои мантейнеры'\n"
+            f"2. Добавьте nickname мантейнера из RDB\n"
+            f"3. Проверяйте пакеты через '🔍 Проверить пакеты'\n\n"
+            f"Используйте кнопки ниже для управления:",
+            reply_markup=keyboards.main_menu_keyboard()
+        )
+    else:
+        # Existing user
+        await message.answer(
+            f"👋 Здравствуйте, {name}!\n\n"
+            f"Используйте кнопки ниже для управления:",
+            reply_markup=keyboards.main_menu_keyboard()
+        )
 
 
 @router.message(Command("help"))
@@ -64,6 +80,11 @@ async def cmd_help(message: Message):
 /subscribe - Настроить уведомления
 /unsubscribe - Отключить уведомления
 
+👤 Управление мантейнерами:
+• Добавляйте мантейнеров по nickname из RDB
+• Email формируется автоматически: nickname@altlinux.org
+• Используйте кнопку "Мои мантейнеры" в меню
+
 🔘 Используйте кнопки меню для удобной навигации!
 """
     await message.answer(help_text)
@@ -73,18 +94,29 @@ async def cmd_help(message: Message):
 @router.callback_query(F.data == "status")
 async def cmd_status(event: Message | CallbackQuery, user: dict, user_id: int, db: Database):
     """Handle /status command or callback."""
-    # Get user emails
+    # Get user emails (combined from old and new systems)
     emails = await db.get_user_emails(user_id)
+
+    # Get maintainer subscriptions
+    maintainers = await db.get_user_maintainer_subscriptions(user_id)
 
     # Get subscription info
     sub_row = await db.fetchone(
         "SELECT * FROM subscriptions WHERE user_id = ? AND enabled = 1",
         (user_id,)
     )
-    
+
     # Format user info
     info = format_user_info(user['name'], user['telegram_id'], emails)
-    
+
+    # Add maintainer subscriptions info
+    if maintainers:
+        info += f"\n\n👤 Подписки на мантейнеров ({len(maintainers)}):"
+        for maint in maintainers[:5]:  # Show first 5
+            info += f"\n  • {maint['nickname']}"
+        if len(maintainers) > 5:
+            info += f"\n  ... и еще {len(maintainers) - 5}"
+
     # Add subscription info
     if sub_row:
         from models.user import Subscription
@@ -121,10 +153,20 @@ async def cmd_check(event: Message | CallbackQuery, user_id: int, db: Database):
     """Handle /check command or callback."""
     # Get user emails
     emails = await db.get_user_emails(user_id)
-    
-    text = "📧 Выберите email для проверки:"
-    keyboard = keyboards.email_selection_keyboard(emails, prefix="check")
-    
+
+    if not emails:
+        # User has no subscriptions yet
+        text = (
+            "📧 У вас пока нет подписок на мантейнеров.\n\n"
+            "Чтобы начать отслеживать пакеты:\n"
+            "1. Нажмите '👤 Мои мантейнеры'\n"
+            "2. Добавьте nickname мантейнера"
+        )
+        keyboard = keyboards.back_to_menu_keyboard()
+    else:
+        text = "📧 Выберите email для проверки:"
+        keyboard = keyboards.email_selection_keyboard(emails, prefix="check")
+
     if isinstance(event, Message):
         await event.answer(text, reply_markup=keyboard)
     else:
@@ -250,10 +292,20 @@ async def cmd_stats(event: Message | CallbackQuery, user_id: int, db: Database):
     """Handle /stats command or callback."""
     # Get user emails
     emails = await db.get_user_emails(user_id)
-    
-    text = "📊 Выберите email для статистики:"
-    keyboard = keyboards.email_selection_keyboard(emails, prefix="stats")
-    
+
+    if not emails:
+        # User has no subscriptions yet
+        text = (
+            "📊 У вас пока нет подписок на мантейнеров.\n\n"
+            "Чтобы начать отслеживать пакеты:\n"
+            "1. Нажмите '👤 Мои мантейнеры'\n"
+            "2. Добавьте nickname мантейнера"
+        )
+        keyboard = keyboards.back_to_menu_keyboard()
+    else:
+        text = "📊 Выберите email для статистики:"
+        keyboard = keyboards.email_selection_keyboard(emails, prefix="stats")
+
     if isinstance(event, Message):
         await event.answer(text, reply_markup=keyboard)
     else:

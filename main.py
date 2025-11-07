@@ -19,6 +19,7 @@ from services.notification import NotificationService
 from bot.middleware import AuthMiddleware, LoggingMiddleware
 from bot import handlers
 from bot import subscription_handlers
+from bot import maintainer_handlers
 
 
 class RepologyBot:
@@ -51,8 +52,9 @@ class RepologyBot:
         self.logger.info("Initializing database...")
         self.db = await init_database(self.config.database.path)
 
-        # Sync users from config
-        await self.db.sync_users_from_config(self.config.users)
+        # Note: User registration is now fully dynamic
+        # Users are automatically created when they first interact with the bot
+        self.logger.info("Using dynamic user registration mode")
 
         # Initialize Repology client
         self.logger.info("Initializing Repology client...")
@@ -95,10 +97,12 @@ class RepologyBot:
         # Register routers
         self.dp.include_router(handlers.router)
         self.dp.include_router(subscription_handlers.router)
+        self.dp.include_router(maintainer_handlers.router)
 
         # Setup dependency injection
         self.dp['db'] = self.db
         self.dp['package_checker'] = self.package_checker
+        self.dp['rdb_client'] = self.rdb_client
         self.dp['config'] = self.config
 
         # Initialize notification service

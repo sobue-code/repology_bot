@@ -7,6 +7,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     """Create main menu keyboard."""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Проверить пакеты", callback_data="check")],
+        [InlineKeyboardButton(text="👤 Мои мантейнеры", callback_data="maintainers")],
         [InlineKeyboardButton(text="🔔 Настроить уведомления", callback_data="subscribe")],
         [InlineKeyboardButton(text="ℹ️ Мои настройки", callback_data="status")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
@@ -252,3 +253,71 @@ def pagination_keyboard(
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def maintainers_menu_keyboard() -> InlineKeyboardMarkup:
+    """Create maintainers management menu keyboard."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить мантейнера", callback_data="add_maintainer")],
+        [InlineKeyboardButton(text="📋 Список мантейнеров", callback_data="list_maintainers")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
+    ])
+    return keyboard
+
+
+def maintainers_list_keyboard(maintainers: List[dict]) -> InlineKeyboardMarkup:
+    """
+    Create keyboard with list of maintainers.
+
+    Args:
+        maintainers: List of dicts with 'nickname' and 'email'
+
+    Returns:
+        InlineKeyboardMarkup
+    """
+    buttons = []
+
+    # Add button for each maintainer
+    for maint in maintainers:
+        nickname = maint['nickname']
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"👤 {nickname}",
+                callback_data=f"maintainer_info:{nickname}"
+            )
+        ])
+
+    # Add back button
+    buttons.append([
+        InlineKeyboardButton(text="◀️ Назад", callback_data="maintainers")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def maintainer_actions_keyboard(nickname: str) -> InlineKeyboardMarkup:
+    """
+    Create keyboard with actions for a specific maintainer.
+
+    Args:
+        nickname: Maintainer nickname
+
+    Returns:
+        InlineKeyboardMarkup
+    """
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🗑️ Удалить подписку",
+            callback_data=f"remove_maintainer:{nickname}"
+        )],
+        [InlineKeyboardButton(text="◀️ Назад к списку", callback_data="list_maintainers")],
+    ])
+    return keyboard
+
+
+def cancel_keyboard() -> InlineKeyboardMarkup:
+    """Create cancel keyboard."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_maintainer")]
+    ])
+    return keyboard

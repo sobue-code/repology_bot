@@ -52,28 +52,33 @@ class AuthMiddleware(BaseMiddleware):
             # For other event types, allow by default
             return await handler(event, data)
         
-        # Check if user exists in database
+        # Check if user exists in database, if not - auto-register them
         user = await self.db.get_user_by_telegram_id(telegram_id)
-        
+
         if user is None:
-            logger.warning(f"Unauthorized access attempt from {telegram_id}")
-            
-            # Send unauthorized message
-            if isinstance(event, Message):
-                await event.answer(
-                    "❌ У вас нет доступа к этому боту.\n"
-                    "Пожалуйста, добавьте ваш Telegram ID в конфигурационный файл."
-                )
-            elif isinstance(event, CallbackQuery):
-                try:
-                    await event.answer(
-                        "❌ У вас нет доступа к этому боту.",
-                        show_alert=True
-                    )
-                except TelegramBadRequest:
-                    pass  # Ignore timeout errors
-            
-            return None
+            # Auto-register new user
+            logger.info(f"New user detected, auto-registering: telegram_id={telegram_id}")
+
+            # Get user's name from Telegram
+            user_name = None
+            if isinstance(event, Message) and event.from_user:
+                first_name = event.from_user.first_name or ""
+                last_name = event.from_user.last_name or ""
+                user_name = f"{first_name} {last_name}".strip() or f"User {telegram_id}"
+            elif isinstance(event, CallbackQuery) and event.from_user:
+                first_name = event.from_user.first_name or ""
+                last_name = event.from_user.last_name or ""
+                user_name = f"{first_name} {last_name}".strip() or f"User {telegram_id}"
+
+            # Create user
+            user_id = await self.db.create_user_if_not_exists(telegram_id, user_name)
+
+            # Get user from database again
+            user = await self.db.get_user_by_telegram_id(telegram_id)
+
+            if user is None:
+                logger.error(f"Failed to create user: telegram_id={telegram_id}")
+                return None
         
         if not user['enabled']:
             logger.warning(f"Access attempt from disabled user {telegram_id}")

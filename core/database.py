@@ -49,17 +49,7 @@ class Database:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        
-        -- User emails table
-        CREATE TABLE IF NOT EXISTS user_emails (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            email TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-            UNIQUE(user_id, email)
-        );
-        
+
         -- Subscriptions table
         CREATE TABLE IF NOT EXISTS subscriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,15 +92,26 @@ class Database:
             sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
-        
+
+        -- Maintainer subscriptions table (new dynamic subscription system)
+        CREATE TABLE IF NOT EXISTS maintainer_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            nickname TEXT NOT NULL,
+            email TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(user_id, nickname)
+        );
+
         -- Indexes for optimization
-        CREATE INDEX IF NOT EXISTS idx_user_emails_email ON user_emails(email);
-        CREATE INDEX IF NOT EXISTS idx_user_emails_user_id ON user_emails(user_id);
         CREATE INDEX IF NOT EXISTS idx_subscriptions_user_enabled ON subscriptions(user_id, enabled);
         CREATE INDEX IF NOT EXISTS idx_package_cache_email ON package_cache(email);
         CREATE INDEX IF NOT EXISTS idx_package_cache_status ON package_cache(status);
         CREATE INDEX IF NOT EXISTS idx_package_cache_cached_at ON package_cache(cached_at);
         CREATE INDEX IF NOT EXISTS idx_notification_history_user ON notification_history(user_id);
+        CREATE INDEX IF NOT EXISTS idx_maintainer_subscriptions_user ON maintainer_subscriptions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_maintainer_subscriptions_nickname ON maintainer_subscriptions(nickname);
         """
         
         await self.connection.executescript(schema)
@@ -119,47 +120,18 @@ class Database:
     
     async def sync_users_from_config(self, users_config):
         """
-        Synchronize users from configuration to database.
-        
+        Deprecated: Users are now registered automatically.
+        This method is kept for backward compatibility but does nothing.
+
         Args:
-            users_config: List of UserConfig objects
+            users_config: List of UserConfig objects (ignored)
         """
-        for user_cfg in users_config:
-            # Insert or update user
-            await self.connection.execute("""
-                INSERT INTO users (name, telegram_id, enabled)
-                VALUES (?, ?, ?)
-                ON CONFLICT(telegram_id) DO UPDATE SET
-                    name = excluded.name,
-                    enabled = excluded.enabled,
-                    updated_at = CURRENT_TIMESTAMP
-            """, (user_cfg.name, user_cfg.telegram_id, user_cfg.enabled))
-            
-            # Get user id
-            cursor = await self.connection.execute(
-                "SELECT id FROM users WHERE telegram_id = ?",
-                (user_cfg.telegram_id,)
+        if users_config:
+            logger.warning(
+                "Users configuration in config.toml is deprecated. "
+                "Users are now registered automatically when they interact with the bot."
             )
-            row = await cursor.fetchone()
-            user_id = row['id']
-            
-            # Remove old emails that are not in config
-            await self.connection.execute("""
-                DELETE FROM user_emails
-                WHERE user_id = ? AND email NOT IN ({})
-            """.format(','.join('?' * len(user_cfg.emails))),
-                (user_id, *user_cfg.emails)
-            )
-            
-            # Insert new emails
-            for email in user_cfg.emails:
-                await self.connection.execute("""
-                    INSERT OR IGNORE INTO user_emails (user_id, email)
-                    VALUES (?, ?)
-                """, (user_id, email))
-        
-        await self.connection.commit()
-        logger.info(f"Synchronized {len(users_config)} users from config")
+        logger.info("Using dynamic user registration mode")
     
     async def get_user_by_telegram_id(self, telegram_id: int):
         """Get user by Telegram ID."""
@@ -170,9 +142,17 @@ class Database:
         return await cursor.fetchone()
     
     async def get_user_emails(self, user_id: int):
-        """Get all emails for a user."""
+        """
+        Get all emails for a user from maintainer subscriptions.
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            List of email addresses
+        """
         cursor = await self.connection.execute(
-            "SELECT email FROM user_emails WHERE user_id = ? ORDER BY email",
+            "SELECT email FROM maintainer_subscriptions WHERE user_id = ? ORDER BY email",
             (user_id,)
         )
         rows = await cursor.fetchall()
@@ -193,6 +173,132 @@ class Database:
         """Fetch all rows."""
         cursor = await self.connection.execute(query, params)
         return await cursor.fetchall()
+
+    # ===== Maintainer Subscription Methods =====
+
+    async def add_maintainer_subscription(self, user_id: int, nickname: str) -> bool:
+        """
+        Add a maintainer subscription for a user.
+
+        Args:
+            user_id: User ID
+            nickname: Maintainer nickname in RDB
+
+        Returns:
+            True if added successfully, False if already exists
+        """
+        email = f"{nickname}@altlinux.org"
+        try:
+            await self.connection.execute("""
+                INSERT INTO maintainer_subscriptions (user_id, nickname, email)
+                VALUES (?, ?, ?)
+            """, (user_id, nickname, email))
+            await self.connection.commit()
+            logger.info(f"Added maintainer subscription: user_id={user_id}, nickname={nickname}")
+            return True
+        except Exception as e:
+            if "UNIQUE constraint failed" in str(e):
+                logger.debug(f"Subscription already exists: user_id={user_id}, nickname={nickname}")
+                return False
+            else:
+                logger.error(f"Failed to add subscription: {e}")
+                raise
+
+    async def remove_maintainer_subscription(self, user_id: int, nickname: str) -> bool:
+        """
+        Remove a maintainer subscription for a user.
+
+        Args:
+            user_id: User ID
+            nickname: Maintainer nickname in RDB
+
+        Returns:
+            True if removed successfully, False if not found
+        """
+        cursor = await self.connection.execute("""
+            DELETE FROM maintainer_subscriptions
+            WHERE user_id = ? AND nickname = ?
+        """, (user_id, nickname))
+        await self.connection.commit()
+
+        removed = cursor.rowcount > 0
+        if removed:
+            logger.info(f"Removed maintainer subscription: user_id={user_id}, nickname={nickname}")
+        else:
+            logger.debug(f"Subscription not found: user_id={user_id}, nickname={nickname}")
+
+        return removed
+
+    async def get_user_maintainer_subscriptions(self, user_id: int):
+        """
+        Get all maintainer subscriptions for a user.
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            List of dicts with 'nickname', 'email', 'created_at'
+        """
+        cursor = await self.connection.execute("""
+            SELECT nickname, email, created_at
+            FROM maintainer_subscriptions
+            WHERE user_id = ?
+            ORDER BY nickname
+        """, (user_id,))
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def check_maintainer_subscription_exists(self, user_id: int, nickname: str) -> bool:
+        """
+        Check if a maintainer subscription exists.
+
+        Args:
+            user_id: User ID
+            nickname: Maintainer nickname
+
+        Returns:
+            True if exists, False otherwise
+        """
+        cursor = await self.connection.execute("""
+            SELECT 1 FROM maintainer_subscriptions
+            WHERE user_id = ? AND nickname = ?
+        """, (user_id, nickname))
+        row = await cursor.fetchone()
+        return row is not None
+
+    async def create_user_if_not_exists(self, telegram_id: int, name: str = None) -> int:
+        """
+        Create a user if they don't exist, or return existing user ID.
+
+        Args:
+            telegram_id: Telegram user ID
+            name: User name (defaults to "User {telegram_id}")
+
+        Returns:
+            User ID (from database)
+        """
+        if name is None:
+            name = f"User {telegram_id}"
+
+        # Try to insert or get existing
+        await self.connection.execute("""
+            INSERT OR IGNORE INTO users (name, telegram_id, enabled)
+            VALUES (?, ?, 1)
+        """, (name, telegram_id))
+        await self.connection.commit()
+
+        # Get user ID
+        cursor = await self.connection.execute(
+            "SELECT id FROM users WHERE telegram_id = ?",
+            (telegram_id,)
+        )
+        row = await cursor.fetchone()
+
+        if row:
+            logger.info(f"User auto-registered or found: telegram_id={telegram_id}, user_id={row['id']}")
+            return row['id']
+        else:
+            raise RuntimeError(f"Failed to create/find user with telegram_id={telegram_id}")
 
 
 # Global database instance

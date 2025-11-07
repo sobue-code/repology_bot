@@ -77,22 +77,6 @@ class NotificationsConfig(BaseModel):
         return v
 
 
-class UserConfig(BaseModel):
-    """User configuration."""
-    name: str
-    telegram_id: int
-    emails: List[str]
-    enabled: bool = True
-
-    @field_validator('emails')
-    @classmethod
-    def validate_emails(cls, v: List[str]) -> List[str]:
-        """Validate that emails list is not empty."""
-        if not v:
-            raise ValueError("At least one email must be specified")
-        return v
-
-
 class Config(BaseModel):
     """Main configuration."""
     bot: BotConfig
@@ -101,21 +85,6 @@ class Config(BaseModel):
     repology: RepologyConfig = Field(default_factory=RepologyConfig)
     rdb: RDBConfig = Field(default_factory=RDBConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
-    users: List[UserConfig]
-
-    @field_validator('users')
-    @classmethod
-    def validate_users(cls, v: List[UserConfig]) -> List[UserConfig]:
-        """Validate users list."""
-        if not v:
-            raise ValueError("At least one user must be configured")
-        
-        # Check for duplicate telegram IDs
-        telegram_ids = [u.telegram_id for u in v]
-        if len(telegram_ids) != len(set(telegram_ids)):
-            raise ValueError("Duplicate telegram_id found in users")
-        
-        return v
 
 
 def load_config(config_path: str = "config.toml") -> Config:

@@ -172,17 +172,30 @@ def format_package_stats(stats: PackageStats) -> str:
     return "\n".join(lines)
 
 
-def format_datetime(dt: datetime) -> str:
+def format_datetime(dt) -> str:
     """
     Format datetime in Russian locale.
-    
+
     Args:
-        dt: Datetime object
-        
+        dt: Datetime object or string
+
     Returns:
         Formatted string
     """
-    return dt.strftime("%d.%m.%Y %H:%M")
+    if isinstance(dt, str):
+        # Parse SQLite datetime string format
+        try:
+            from datetime import datetime as dt_class
+            # Try ISO format first (e.g., "2025-01-07 15:30:00")
+            parsed_dt = dt_class.fromisoformat(dt.replace('Z', '+00:00'))
+            return parsed_dt.strftime("%d.%m.%Y %H:%M")
+        except (ValueError, AttributeError):
+            # If parsing fails, return as-is
+            return dt
+    elif isinstance(dt, datetime):
+        return dt.strftime("%d.%m.%Y %H:%M")
+    else:
+        return str(dt)
 
 
 def format_user_info(name: str, telegram_id: int, emails: List[str]) -> str:

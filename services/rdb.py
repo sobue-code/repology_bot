@@ -183,3 +183,45 @@ class RDBClient:
 
         logger.debug(f"No ALT package found for '{repology_name}'")
         return None
+
+    async def validate_maintainer(self, nickname: str) -> bool:
+        """
+        Validate that a maintainer exists in RDB.
+
+        Args:
+            nickname: Maintainer nickname to validate
+
+        Returns:
+            True if maintainer exists, False otherwise
+        """
+        session = await self._get_session()
+
+        url = f"{self.base_url}/watch_by_maintainer"
+        params = {
+            "maintainer_nickname": nickname,
+            "by_acl": "none"
+        }
+
+        try:
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # If we get a valid response, maintainer exists
+                    # Even if they have no packages, the endpoint will return empty list
+                    logger.debug(f"Maintainer '{nickname}' validated successfully")
+                    return True
+                elif response.status == 404:
+                    logger.debug(f"Maintainer '{nickname}' not found")
+                    return False
+                else:
+                    # For other status codes, assume maintainer might exist
+                    logger.warning(f"Unexpected status {response.status} when validating '{nickname}'")
+                    return True
+
+        except aiohttp.ClientError as e:
+            logger.error(f"Failed to validate maintainer '{nickname}': {e}")
+            # On network error, assume valid to allow adding
+            return True
+        except Exception as e:
+            logger.error(f"Unexpected error validating maintainer '{nickname}': {e}")
+            return True

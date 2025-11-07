@@ -40,12 +40,6 @@ cache_duration = 6
 api_base_url = "https://rdb.altlinux.org/api/site"
 request_timeout = 30
 
-# Email to RDB maintainer nickname mapping
-# Format: email = "nickname"
-[rdb.maintainer_mapping]
-"maintainer@example.com" = "nickname_in_rdb"
-# Add more mappings as needed
-
 [notifications]
 # Default time for daily checks (HH:MM format, 24h)
 default_check_time = "09:00"
@@ -55,17 +49,3 @@ max_packages_per_message = 20
 
 # Minimum interval between notifications (hours)
 min_notification_interval = 1
-
-# User configurations
-[[users]]
-name = "User Name"
-telegram_id = 123456789
-emails = ["maintainer@example.com", "another@example.org"]
-enabled = true
-
-# Add more users as needed
-# [[users]]
-# name = "Another User"
-# telegram_id = 987654321
-# emails = ["user@example.com"]
-# enabled = true
