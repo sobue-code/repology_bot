@@ -7,6 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from bot import keyboards
 from core.database import Database
+from core.scheduler import NotificationScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ async def callback_subscribe_weekly(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("time_daily:"))
-async def callback_time_daily(callback: CallbackQuery, user_id: int, db: Database):
+async def callback_time_daily(callback: CallbackQuery, user_id: int, db: Database, scheduler: NotificationScheduler):
     """Handle daily time selection."""
     time = callback.data.split(":", 1)[1]
 
@@ -85,6 +86,9 @@ async def callback_time_daily(callback: CallbackQuery, user_id: int, db: Databas
         INSERT INTO subscriptions (user_id, frequency, time, day_of_week, enabled)
         VALUES (?, 'daily', ?, NULL, 1)
     """, (user_id, time))
+    
+    # Reload scheduler to pick up the new subscription
+    await scheduler.reload_subscriptions()
     
     text = f"✅ Подписка настроена!\n\nВы будете получать уведомления ежедневно в {time}"
     
@@ -110,7 +114,7 @@ async def callback_time_weekly(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("day:"))
-async def callback_day_selection(callback: CallbackQuery, user_id: int, db: Database):
+async def callback_day_selection(callback: CallbackQuery, user_id: int, db: Database, scheduler: NotificationScheduler):
     """Handle day of week selection."""
     parts = callback.data.split(":")
     time = parts[1]
@@ -124,6 +128,9 @@ async def callback_day_selection(callback: CallbackQuery, user_id: int, db: Data
         INSERT INTO subscriptions (user_id, frequency, time, day_of_week, enabled)
         VALUES (?, 'weekly', ?, ?, 1)
     """, (user_id, time, day_of_week))
+    
+    # Reload scheduler to pick up the new subscription
+    await scheduler.reload_subscriptions()
     
     days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
     day_name = days[day_of_week]
@@ -183,13 +190,16 @@ async def cmd_unsubscribe(event: Message | CallbackQuery, user_id: int, db: Data
 
 
 @router.callback_query(F.data.startswith("confirm_unsub"))
-async def callback_confirm_unsubscribe(callback: CallbackQuery, user_id: int, db: Database):
+async def callback_confirm_unsubscribe(callback: CallbackQuery, user_id: int, db: Database, scheduler: NotificationScheduler):
     """Confirm unsubscription."""
     # Disable subscription
     await db.execute(
         "UPDATE subscriptions SET enabled = 0 WHERE user_id = ?",
         (user_id,)
     )
+    
+    # Reload scheduler to remove the disabled subscription
+    await scheduler.reload_subscriptions()
     
     text = "✅ Автоматические уведомления отключены\n\nВы всё ещё можете проверять пакеты вручную командой /check"
     
@@ -235,3 +245,40 @@ async def cmd_settings(message: Message, user_id: int, db: Database):
         text += "\n\nИспользуйте /subscribe для изменения или /unsubscribe для отключения."
     
     await message.answer(text, reply_markup=keyboards.back_to_menu_keyboard())
+
+
+@router.message(Command("test_notify"))
+async def cmd_test_notify(message: Message, user_id: int, db: Database, scheduler: NotificationScheduler):
+    """Test command to manually trigger notification (for testing purposes)."""
+    # Get user subscription
+    sub_row = await db.fetchone(
+        "SELECT * FROM subscriptions WHERE user_id = ? AND enabled = 1",
+        (user_id,)
+    )
+    
+    if sub_row is None:
+        await message.answer(
+            "❌ У вас нет активной подписки.\nИспользуйте /subscribe для настройки уведомлений.",
+            reply_markup=keyboards.back_to_menu_keyboard()
+        )
+        return
+    
+    telegram_id = message.from_user.id
+    
+    await message.answer("🔄 Отправляю тестовое уведомление...")
+    
+    try:
+        from services.notification import NotificationService
+        # Get notification service from scheduler
+        notification_service = scheduler.notification_service
+        
+        await notification_service.send_notification_to_user(
+            user_id=user_id,
+            telegram_id=telegram_id,
+            subscription_id=sub_row['id']
+        )
+        
+        await message.answer("✅ Тестовое уведомление отправлено!")
+    except Exception as e:
+        logger.error(f"Failed to send test notification: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка при отправке уведомления: {str(e)}")

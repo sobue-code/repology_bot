@@ -103,12 +103,6 @@ class RepologyBot:
         self.dp.include_router(maintainer_handlers.router)
         self.dp.include_router(search_handlers.router)
 
-        # Setup dependency injection
-        self.dp['db'] = self.db
-        self.dp['package_checker'] = self.package_checker
-        self.dp['rdb_client'] = self.rdb_client
-        self.dp['config'] = self.config
-
         # Initialize notification service
         self.logger.info("Initializing notification service...")
         self.notification_service = NotificationService(
@@ -125,6 +119,13 @@ class RepologyBot:
             self.notification_service
         )
         await self.scheduler.start()
+
+        # Setup dependency injection
+        self.dp['db'] = self.db
+        self.dp['package_checker'] = self.package_checker
+        self.dp['rdb_client'] = self.rdb_client
+        self.dp['config'] = self.config
+        self.dp['scheduler'] = self.scheduler
 
         self.logger.info("Bot setup completed successfully!")
     
